@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html>
+<head lang="en">
+    <meta charset="UTF-8">
+    <title>FBO</title>
+    <link rel="stylesheet" href="vendor/tachyons.css">
+</head>
+<body class="sans-serif">
+    <div class="w-20 fr absolute bg-white-30  pa4 tc light-gray ba ma4 b--light-gray">
+      <div class="w-100 pa2">
+        <span class="">X</span><input type="range" min="0" max="100" value="0.01" class="w-100 mw6" id="sliderX">
+      </div>
+      <div class="w-100 pa2">
+        <span class="">Y</span><input type="range" min="0" max="100" value="0.01" class="w-100 mw6" id="sliderY">
+      </div>
+      <div class="w-100 pa2">
+        <span class="">Z</span><input type="range" min="0" max="100" value="0.01" class="w-100 mw6" id="sliderZ">
+      </div>
+    </div>
+
+    <div id="container" class="w-100 vh-100"></div>
+
+    <script src="vendor/three.min.js"></script>
+    <script src="ShaderLoader.js"></script>
+    <script src="fbo.js"></script>
+    <script src="vendor/OrbitControls.js"></script>
+    <script src="vendor/jquery-3.2.1.min.js"></script>
+
+    <script>
+
+        var scene, camera, renderer;
+        var simulationShader;
+        var xFactor = 0.0;
+        var yFactor = 0.0;
+        var zFactor = 0.0;
+
+        window.onload = function() {
+
+            var sl = new ShaderLoader();
+            sl.loadShaders({
+                simulation_vs : "",
+                simulation_fs : "",
+                render_vs : "",
+                render_fs : ""
+            }, "./glsl/basic/", init );
+
+        };
+
+        function init()
+        {
+
+            let w = $('#container').outerWidth();
+            let h = $('#container').outerHeight();
+
+            //regular scene creation
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(15,w/h, 1,10000 );
+            camera.position.set( 1,1,1 );
+            camera.lookAt(scene.position);
+
+            // renderer creation
+            renderer = new THREE.WebGLRenderer( { alpha: true } );
+            renderer.setClearColor (0x101010, 1);
+            renderer.setSize( w,h );
+            document.getElementById("container").append( renderer.domElement );
+
+            //Mouse controls for panning
+            controls = new THREE.OrbitControls( camera, renderer.domElement );
+            controls.enableDamping = true;
+          	controls.dampingFactor = 0.3;
+          	controls.screenSpacePanning = false;
+          	controls.minDistance = 150;
+          	controls.maxDistance = 180;
+          	controls.maxPolarAngle = Math.PI / 2;
+
+            //Background grid
+            var size = 11;
+            var divisions = 2;
+
+            var gridHelper1 = new THREE.GridHelper( size, divisions );
+            gridHelper1.rotation.set(Math.PI/2,0,0)
+            gridHelper1.position.set(0,0,-size)
+            var gridHelper2 = new THREE.GridHelper( size, divisions );
+            gridHelper2.rotation.set(0,0,0)
+            gridHelper2.position.set(0,-size,0)
+            var gridHelper3 = new THREE.GridHelper( size, divisions );
+            gridHelper3.rotation.set(0,0,Math.PI/2)
+            gridHelper3.position.set(-size,0,0)
+            gridHelper1.material.opacity = 0.2;
+            gridHelper1.material.transparent = true;
+            gridHelper2.material.opacity = 0.2;
+            gridHelper2.material.transparent = true;
+            gridHelper3.material.opacity = 0.2;
+            gridHelper3.material.transparent = true;
+            scene.add( gridHelper1, gridHelper2, gridHelper3 );
+            console.log(gridHelper1)
+
+            var material = new THREE.LineBasicMaterial({
+            	color: 0xfafafa,
+              linewidth: 10,
+            });
+
+            var linesize = 12;
+            var linedifference = linesize - size;
+
+            var geometry = new THREE.Geometry();
+            geometry.vertices.push(
+            	new THREE.Vector3( -linesize, 0, 0 ),
+            	new THREE.Vector3( linesize, 0, 0 )
+            );
+
+            var line1 = new THREE.Line( geometry, material );
+            line1.rotation.set(0,0,0)
+            line1.position.set(linedifference,-size,-size)
+            var line2 = new THREE.Line( geometry, material );
+            line2.rotation.set(0,Math.PI/2,0)
+            line2.position.set(-size,-size,linedifference)
+            var line3 = new THREE.Line( geometry, material );
+            line3.rotation.set(0,0,Math.PI/2)
+            line3.position.set(-size,linedifference,-size)
+            scene.add( line1, line2, line3 );
+
+            //width / height of the FBO
+
+            var width  = 216;
+            var height = 216;
+
+            //populate a Float32Array of random positions
+
+            function initPointCloud(size) {
+              var points = new Float32Array(139968);
+              var steps = 17;
+              var width = size;
+              var spacing = width / steps;
+              var index = 0;
+              for (var x = -size; x <= size; x+=spacing) {
+                  for (var y = -size; y <= size; y+=spacing) {
+                      for (var z = -size; z <= size; z+=spacing) {
+                          index += 1;
+                          points[index] = x;
+                          index += 1;
+                          points[index] = y;
+                          index+=1;
+                          points[index] = z;
+                      }
+                  }
+              }
+              return points;
+            }
+            // var points = initPointCloud(Math.PI*3)
+            var data = getRandomData( width, height, 30);
+            var positions = new THREE.DataTexture( data, 216, 216, THREE.RGBFormat, THREE.FloatType );
+            positions.needsUpdate = true;
+            var original_positions = new THREE.DataTexture( data, 216, 216, THREE.RGBFormat, THREE.FloatType );
+
+            //this will be used to update the particles' positions
+
+            simulationShader = new THREE.ShaderMaterial({
+
+                uniforms: {
+                    positions: { type: "t", value: positions },
+                    xFactor: { type: "f", value: xFactor },
+                    yFactor: { type: "f", value: yFactor },
+                    zFactor: { type: "f", value: zFactor },
+                },
+                vertexShader: ShaderLoader.get( "simulation_vs" ),
+                fragmentShader:  ShaderLoader.get( "simulation_fs" ),
+                transparent: true,
+                blending: THREE.NoBlending
+            });
+
+            //this will be used to represent the particles on screen
+            //note that 'positions' is a texture that will be set and updated during the FBO.update() call
+            var renderShader = new THREE.ShaderMaterial( {
+                uniforms: {
+                    original_positions: { type: "t", value: original_positions },
+                    positions: { type: "t", value: null },
+                    pointSize: { type: "f", value: 2 },
+                },
+                vertexShader: ShaderLoader.get( "render_vs" ),
+                fragmentShader: ShaderLoader.get( "render_fs" ),
+                transparent: true,
+                blending: THREE.AdditiveBlending
+            } );
+
+            //init the FBO
+            FBO.init( width, height, renderer, simulationShader, renderShader );
+            scene.add( FBO.particles );
+
+            //GO !
+            window.addEventListener( "resize", onResize );
+            onResize();
+            update();
+
+        }
+
+        //returns an array of random 3D coordinates
+        function getRandomData( width, height, size ){
+
+            var len = width * height * 3;
+            var data = new Float32Array( len );
+            while( len-- )data[len] = ( gaussianRand() -.5 ) * size ;
+            return data;
+        }
+
+        function gaussianRand() {
+          var rand = 0;
+          for (var i = 0; i < 6; i += 1) {
+            rand += Math.random();
+          }
+          return rand / 6;
+        }
+
+
+        function onResize()
+        {
+            // var w = window.innerWidth;
+            // var h = window.innerHeight;
+            // renderer.setSize(w,h);
+            // camera.aspect = w/h;
+            // camera.updateProjectionMatrix();
+        }
+
+        //update loop
+        function update()
+        {
+            requestAnimationFrame(update);
+            controls.update();
+
+            //update the simulation
+            FBO.update();
+
+            var sliderX = document.getElementById('sliderX').value;
+            var sliderY = document.getElementById('sliderY').value;
+            var sliderZ = document.getElementById('sliderZ').value;
+            simulationShader.uniforms.xFactor.value = sliderX/100;
+            simulationShader.uniforms.yFactor.value = sliderZ/100;
+            simulationShader.uniforms.zFactor.value = sliderY/100;
+
+            //render the particles at the new location
+            renderer.render( scene, camera );
+
+        }
+
+    </script>
+
+</body>
+</html>
